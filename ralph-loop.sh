@@ -3,6 +3,8 @@
 # RALPH LOOP — Orquestrador
 #
 # Executa o Ralph em worktree isolado com Skinner Enforcement.
+# O motor e centralizado — cada projeto em workspace/ e um repo independente.
+#
 # Uso:
 #   ./ralph-loop.sh ghostfit                   # Rodar no workspace ghostfit
 #   ./ralph-loop.sh ghostfit --max-loops 5     # Limitar a 5 loops
@@ -10,12 +12,12 @@
 #   ./ralph-loop.sh ghostfit --prompt "fix X"  # Task especifica
 #
 # O primeiro argumento e o nome do workspace (pasta em workspace/).
-# Cada workspace tem seu proprio .ralphrc e .ralph/ com configs do projeto.
+# Cada workspace e um repo git independente com seu proprio .ralphrc.
 ###############################################################################
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MOTOR_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-if [ ! -f "$SCRIPT_DIR/.skinner/skinner.sh" ]; then
+if [ ! -f "$MOTOR_ROOT/.skinner/skinner.sh" ]; then
     echo "ERROR: Skinner not found at .skinner/skinner.sh"
     exit 1
 fi
@@ -26,11 +28,18 @@ if [ -z "$1" ] || [[ "$1" == --* ]]; then
     echo ""
     echo "Usage: ./ralph-loop.sh <workspace-name> [options]"
     echo ""
+    echo "Options:"
+    echo "  --max-loops N    Limit to N loops (default: 20)"
+    echo "  --dry-run        Simulate without executing"
+    echo "  --prompt \"...\"   Custom task prompt"
+    echo ""
     echo "Available workspaces:"
-    for dir in "$SCRIPT_DIR"/workspace/*/; do
-        if [ -f "$dir/.ralphrc" ]; then
+    for dir in "$MOTOR_ROOT"/workspace/*/; do
+        if [ -d "$dir/.git" ]; then
             name=$(basename "$dir")
-            echo "  - $name"
+            has_ralphrc=""
+            [ -f "$dir/.ralphrc" ] && has_ralphrc=" (configured)"
+            echo "  - $name$has_ralphrc"
         fi
     done
     exit 1
@@ -39,17 +48,29 @@ fi
 WORKSPACE_NAME="$1"
 shift
 
-WORKSPACE_DIR="$SCRIPT_DIR/workspace/$WORKSPACE_NAME"
+PROJECT_DIR="$MOTOR_ROOT/workspace/$WORKSPACE_NAME"
 
-if [ ! -d "$WORKSPACE_DIR" ]; then
-    echo "ERROR: Workspace not found: $WORKSPACE_DIR"
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "ERROR: Workspace not found: $PROJECT_DIR"
+    echo "Run /setup-workspace $WORKSPACE_NAME to create it."
     exit 1
 fi
 
-if [ ! -f "$WORKSPACE_DIR/.ralphrc" ]; then
+if [ ! -d "$PROJECT_DIR/.git" ]; then
+    echo "ERROR: workspace/$WORKSPACE_NAME/ is not a git repository."
+    echo "Each workspace must be an independent git repo."
+    echo "Run /setup-workspace $WORKSPACE_NAME to initialize it."
+    exit 1
+fi
+
+if [ ! -f "$PROJECT_DIR/.ralphrc" ]; then
     echo "ERROR: No .ralphrc found in workspace/$WORKSPACE_NAME/"
-    echo "Run ralph configuration for this workspace first."
+    echo "Run /setup-workspace $WORKSPACE_NAME to configure it."
     exit 1
 fi
 
-exec "$SCRIPT_DIR/.skinner/skinner.sh" --workspace "$WORKSPACE_NAME" "$@"
+# Pass motor root and project dir to Skinner
+export MOTOR_ROOT
+export PROJECT_DIR
+
+exec "$MOTOR_ROOT/.skinner/skinner.sh" --workspace "$WORKSPACE_NAME" "$@"

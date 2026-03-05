@@ -3,6 +3,13 @@
 # SKINNER ENFORCEMENT ENGINE v2
 # Controle de qualidade para o loop autonomo do Ralph.
 #
+# ARQUITETURA NESTED-REPOS:
+#   - MOTOR_ROOT: raiz do motor (engine.yaml, .skinner/, .ralph/ templates)
+#   - PROJECT_DIR: raiz do projeto (repo git independente em workspace/)
+#   - Skinner le configs do MOTOR, mas opera git dentro do PROJETO
+#   - Worktrees sao criados no repo do PROJETO
+#   - Logs e VIGIL ficam no MOTOR (.skinner/logs/, .skinner/memory/)
+#
 # Evolucao do v1 com:
 #   - Leitura de engine.yaml para flags de camadas
 #   - Integracao com VIGIL (memoria comportamental)
@@ -11,7 +18,7 @@
 #   - Mutation testing como gate (quando habilitado)
 #
 # Responsabilidades:
-#   1. Criar worktree isolado para Ralph trabalhar
+#   1. Criar worktree isolado para Ralph trabalhar (no repo do projeto)
 #   2. Commit atomico apos cada loop bem-sucedido
 #   3. Deteccao de erro circular / alucinacao → auto-revert
 #   4. Circuit breaker → parar Ralph se nao houver progresso
@@ -20,13 +27,19 @@
 #
 # Uso:
 #   ./skinner.sh --workspace ghostfit [--dry-run] [--max-loops N] [--prompt "task"]
+#
+# Environment (set by ralph-loop.sh):
+#   MOTOR_ROOT  — path to the engine root
+#   PROJECT_DIR — path to the project root (workspace/<name>)
 ###############################################################################
 
 set -euo pipefail
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# MOTOR_ROOT: where engine.yaml, .skinner/, .ralph/ templates live
+MOTOR_ROOT="${MOTOR_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # Parse args
 WORKSPACE_NAME=""
@@ -44,9 +57,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# PROJECT_DIR: where the actual code lives (independent git repo)
+PROJECT_DIR="${PROJECT_DIR:-$MOTOR_ROOT/workspace/$WORKSPACE_NAME}"
+
 # ─── Engine Config ─────────────────────────────────────────────────────────
-# Read engine.yaml for layer flags (basic YAML parsing via grep/sed)
-ENGINE_YAML="$REPO_ROOT/engine.yaml"
+# Read engine.yaml from MOTOR (not project)
+ENGINE_YAML="$MOTOR_ROOT/engine.yaml"
 
 engine_get() {
     local key="$1"
@@ -60,13 +76,10 @@ engine_get() {
     fi
 }
 
-# Layer flags
-VIGIL_ENABLED=$(engine_get "enabled" "true" | head -1)
-# More precise parsing for specific layers
+# Layer flags (from motor's engine.yaml)
 is_layer_enabled() {
     local layer="$1"
     if [ -f "$ENGINE_YAML" ]; then
-        # Find the layer section and check its enabled flag
         awk "/^  ${layer}:/{found=1} found && /enabled:/{print \$2; exit}" "$ENGINE_YAML" | tr -d ' '
     else
         echo "false"
@@ -79,13 +92,13 @@ MUTAHUNTER_ENABLED=$(is_layer_enabled "mutahunter")
 LANGFUSE_ENABLED=$(is_layer_enabled "langfuse")
 
 # ─── Workspace Config ──────────────────────────────────────────────────────
-if [ -n "$WORKSPACE_NAME" ]; then
-    WORKSPACE_DIR="$REPO_ROOT/workspace/$WORKSPACE_NAME"
-    RALPHRC="$WORKSPACE_DIR/.ralphrc"
-    RALPH_DIR="$WORKSPACE_DIR/.ralph"
-else
-    RALPHRC="$REPO_ROOT/.ralphrc"
-    RALPH_DIR="$REPO_ROOT/.ralph"
+# .ralphrc and .ralph/ come from the PROJECT (overrides motor templates)
+RALPHRC="$PROJECT_DIR/.ralphrc"
+RALPH_DIR="$PROJECT_DIR/.ralph"
+
+# Fallback to motor templates if project doesn't have its own
+if [ ! -d "$RALPH_DIR" ]; then
+    RALPH_DIR="$MOTOR_ROOT/.ralph"
 fi
 
 if [ -f "$RALPHRC" ]; then
@@ -96,8 +109,8 @@ else
 fi
 
 # Defaults (overridden by .ralphrc or engine.yaml)
-PROJECT_NAME="${PROJECT_NAME:-AI-Brain}"
-PROJECT_ROOT="${PROJECT_ROOT:-workspace/$WORKSPACE_NAME}"
+PROJECT_NAME="${PROJECT_NAME:-$WORKSPACE_NAME}"
+PROJECT_ROOT="${PROJECT_ROOT:-.}"
 CLAUDE_CODE_CMD="${CLAUDE_CODE_CMD:-claude}"
 CB_NO_PROGRESS_THRESHOLD="${CB_NO_PROGRESS_THRESHOLD:-3}"
 CB_SAME_ERROR_THRESHOLD="${CB_SAME_ERROR_THRESHOLD:-5}"
@@ -106,10 +119,10 @@ MAX_LOOPS="${MAX_LOOPS_ARG:-${MAX_LOOPS:-20}}"
 # ─── State tracking ─────────────────────────────────────────────────────────
 WORKTREE_DIR=""
 WORKTREE_BRANCH=""
-LOG_DIR="$REPO_ROOT/.skinner/logs"
-[ -n "$WORKSPACE_NAME" ] && LOG_DIR="$REPO_ROOT/.skinner/logs/$WORKSPACE_NAME"
+# Logs and memory stay in the MOTOR (shared across projects)
+LOG_DIR="$MOTOR_ROOT/.skinner/logs/$WORKSPACE_NAME"
 LOG_FILE="$LOG_DIR/session-$(date +%Y%m%d-%H%M%S).log"
-MEMORY_DIR="$REPO_ROOT/.skinner/memory"
+MEMORY_DIR="$MOTOR_ROOT/.skinner/memory"
 NO_PROGRESS_COUNT=0
 LAST_ERROR=""
 SAME_ERROR_COUNT=0
@@ -147,13 +160,11 @@ vigil_record_error() {
 }
 
 vigil_get_context() {
-    # Return top N most recent/relevant errors for prompt injection
     if [ "$VIGIL_ENABLED" = "true" ] && [ -f "$VIGIL_FILE" ]; then
         local max_errors
         max_errors=$(engine_get "max_context_errors" "5")
         local workspace_filter="${WORKSPACE_NAME:-root}"
 
-        # Get recent errors for this workspace, deduplicate by message, take top N
         grep "\"workspace\":\"$workspace_filter\"" "$VIGIL_FILE" 2>/dev/null | \
             tail -50 | \
             sort -t'"' -k8 -u | \
@@ -185,37 +196,38 @@ $context"
 }
 
 # ─── Worktree Management ────────────────────────────────────────────────────
+# Worktrees are created in the PROJECT's git repo (not the motor)
 create_worktree() {
     local timestamp=$(date +%Y%m%d-%H%M%S)
     local wt_name="${WORKSPACE_NAME:-ralph}"
     WORKTREE_BRANCH="ralph/$wt_name-$timestamp"
-    WORKTREE_DIR="$REPO_ROOT/.claude/worktrees/$wt_name-$timestamp"
+    # Worktree dir lives alongside the project (not inside motor)
+    WORKTREE_DIR="$PROJECT_DIR/.worktrees/$wt_name-$timestamp"
 
-    log "INFO" "Creating worktree: $WORKTREE_BRANCH"
+    log "INFO" "Creating worktree in PROJECT repo: $PROJECT_DIR"
+    log "INFO" "Branch: $WORKTREE_BRANCH"
     log "INFO" "Location: $WORKTREE_DIR"
 
     mkdir -p "$(dirname "$WORKTREE_DIR")"
-    git -C "$REPO_ROOT" worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" HEAD
+    git -C "$PROJECT_DIR" worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" HEAD
 
-    # Copy workspace .ralph/ into worktree root
-    if [ -d "$RALPH_DIR" ]; then
-        cp -r "$RALPH_DIR" "$WORKTREE_DIR/.ralph"
-        log "INFO" "Copied .ralph/ from workspace/$WORKSPACE_NAME/"
+    # Copy project's .ralph/ into worktree (or motor's templates as fallback)
+    if [ -d "$PROJECT_DIR/.ralph" ]; then
+        cp -r "$PROJECT_DIR/.ralph" "$WORKTREE_DIR/.ralph"
+        log "INFO" "Copied .ralph/ from project"
+    elif [ -d "$MOTOR_ROOT/.ralph" ]; then
+        cp -r "$MOTOR_ROOT/.ralph" "$WORKTREE_DIR/.ralph"
+        log "INFO" "Copied .ralph/ from motor (template)"
     fi
 
-    # Copy workspace .ralphrc into worktree root
-    if [ -f "$RALPHRC" ]; then
-        cp "$RALPHRC" "$WORKTREE_DIR/.ralphrc"
+    # Copy project's .ralphrc
+    if [ -f "$PROJECT_DIR/.ralphrc" ]; then
+        cp "$PROJECT_DIR/.ralphrc" "$WORKTREE_DIR/.ralphrc"
     fi
 
-    # Copy CLAUDE.md if it exists at repo root
-    if [ -f "$REPO_ROOT/CLAUDE.md" ]; then
-        cp "$REPO_ROOT/CLAUDE.md" "$WORKTREE_DIR/CLAUDE.md"
-    fi
-
-    # Copy engine.yaml if it exists
-    if [ -f "$REPO_ROOT/engine.yaml" ]; then
-        cp "$REPO_ROOT/engine.yaml" "$WORKTREE_DIR/engine.yaml"
+    # Copy project's CLAUDE.md
+    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+        cp "$PROJECT_DIR/CLAUDE.md" "$WORKTREE_DIR/CLAUDE.md"
     fi
 
     log "INFO" "Worktree created successfully"
@@ -226,17 +238,17 @@ create_worktree() {
 cleanup_worktree() {
     if [ -n "$WORKTREE_DIR" ] && [ -d "$WORKTREE_DIR" ]; then
         local changes=$(git -C "$WORKTREE_DIR" diff --stat HEAD 2>/dev/null || true)
-        local current_branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+        local current_branch=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)
         if [ -n "$changes" ]; then
             log "WARN" "Uncommitted changes in worktree — leaving for review"
             log "INFO" "Worktree preserved at: $WORKTREE_DIR"
             log "INFO" "Branch: $WORKTREE_BRANCH"
-            log "INFO" "To merge: git merge $WORKTREE_BRANCH"
+            log "INFO" "To merge: cd $PROJECT_DIR && git merge $WORKTREE_BRANCH"
             log "INFO" "To remove: git worktree remove $WORKTREE_DIR"
         else
             log "INFO" "No uncommitted changes. Review commits before merging."
             log "INFO" "Worktree at: $WORKTREE_DIR"
-            log "INFO" "To merge: git checkout $current_branch && git merge $WORKTREE_BRANCH"
+            log "INFO" "To merge: cd $PROJECT_DIR && git checkout $current_branch && git merge $WORKTREE_BRANCH"
             log "INFO" "To discard: git worktree remove $WORKTREE_DIR && git branch -D $WORKTREE_BRANCH"
         fi
     fi
@@ -260,8 +272,8 @@ skinner_commit() {
         return 0
     fi
 
-    # Stage all changes in PROJECT_ROOT and fix_plan
-    git add "$PROJECT_ROOT/" .ralph/fix_plan.md 2>/dev/null || true
+    # Stage all changes
+    git add -A
 
     staged=$(git diff --cached --stat)
     if [ -z "$staged" ]; then
@@ -295,7 +307,6 @@ skinner_revert() {
     cd "$WORKTREE_DIR"
     git reset --hard "$LAST_GOOD_COMMIT"
 
-    # Record in VIGIL
     vigil_record_error "REVERT" "$reason"
 
     log "REVERT" "Reverted successfully"
@@ -326,13 +337,11 @@ check_circuit_breaker() {
     local exit_signal="$3"
     local recommendation="$4"
 
-    # Exit signal from Ralph
     if [ "$exit_signal" = "true" ]; then
         log "CIRCUIT" "Ralph requested exit: $recommendation"
         return 1
     fi
 
-    # No progress detection
     if [ "$tasks_completed" -eq 0 ] 2>/dev/null; then
         NO_PROGRESS_COUNT=$((NO_PROGRESS_COUNT + 1))
         log "WARN" "No progress detected ($NO_PROGRESS_COUNT/$CB_NO_PROGRESS_THRESHOLD)"
@@ -347,7 +356,6 @@ check_circuit_breaker() {
         return 1
     fi
 
-    # Same error detection
     if [ "$test_status" = "FAILING" ]; then
         if [ "$recommendation" = "$LAST_ERROR" ] && [ -n "$LAST_ERROR" ]; then
             SAME_ERROR_COUNT=$((SAME_ERROR_COUNT + 1))
@@ -375,18 +383,13 @@ check_circuit_breaker() {
 run_gate_checks() {
     local passed=true
 
-    # ArchUnit gate
     if [ "$ARCHUNIT_ENABLED" = "true" ]; then
         log "GATE" "Running architecture tests..."
-        # TODO: Integrate with project-specific arch test runner
-        # For now, log that it would run
         log "GATE" "ArchUnit gate: SKIPPED (not yet configured for this project)"
     fi
 
-    # MutaHunter gate
     if [ "$MUTAHUNTER_ENABLED" = "true" ]; then
         log "GATE" "Running mutation testing..."
-        # TODO: Integrate with MutaHunter
         log "GATE" "MutaHunter gate: SKIPPED (not yet configured for this project)"
     fi
 
@@ -434,6 +437,7 @@ run_ralph_loop() {
     cmd_args+=("-p" "$prompt")
 
     log "INFO" "Running: $CLAUDE_CODE_CMD --print -p '<prompt>' (${#cmd_args[@]} args)"
+    log "INFO" "Working directory: $WORKTREE_DIR"
 
     local output
     output=$(unset CLAUDECODE; "$CLAUDE_CODE_CMD" "${cmd_args[@]}" 2>&1) || true
@@ -447,6 +451,8 @@ run_ralph_loop() {
 main() {
     log_separator
     log "INFO" "SKINNER ENFORCEMENT ENGINE v2 — $PROJECT_NAME"
+    log "INFO" "Motor: $MOTOR_ROOT"
+    log "INFO" "Project: $PROJECT_DIR"
     log "INFO" "Workspace: ${WORKSPACE_NAME:-root} | Max loops: $MAX_LOOPS | Dry run: $DRY_RUN"
     log "INFO" "Layers: VIGIL=$VIGIL_ENABLED | ArchUnit=$ARCHUNIT_ENABLED | MutaHunter=$MUTAHUNTER_ENABLED | Langfuse=$LANGFUSE_ENABLED"
     log_separator
@@ -481,7 +487,6 @@ main() {
         log "INFO" "Ralph status: $status | Tasks: $tasks_completed | Tests: $tests_status"
         log "INFO" "Recommendation: $recommendation"
 
-        # Record failing tests in VIGIL
         if [ "$tests_status" = "FAILING" ]; then
             vigil_record_error "TEST_FAILURE" "Loop $LOOP_COUNT: $recommendation"
         fi
@@ -513,6 +518,8 @@ main() {
     log "INFO" "SESSION REPORT"
     log "INFO" "  Project: $PROJECT_NAME"
     log "INFO" "  Workspace: ${WORKSPACE_NAME:-root}"
+    log "INFO" "  Motor: $MOTOR_ROOT"
+    log "INFO" "  Project dir: $PROJECT_DIR"
     log "INFO" "  Loops executed: $LOOP_COUNT"
     log "INFO" "  Tasks completed: $TOTAL_TASKS_COMPLETED"
     log "INFO" "  No-progress count: $NO_PROGRESS_COUNT"
@@ -524,9 +531,9 @@ main() {
     log_separator
 
     if [ "$TOTAL_TASKS_COMPLETED" -gt 0 ]; then
-        local current_branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+        local current_branch=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)
         log "INFO" "NEXT STEPS:"
-        log "INFO" "  1. Review changes:  git log $WORKTREE_BRANCH --oneline"
+        log "INFO" "  1. Review changes:  cd $PROJECT_DIR && git log $WORKTREE_BRANCH --oneline"
         log "INFO" "  2. Diff vs base:    git diff $current_branch..$WORKTREE_BRANCH"
         log "INFO" "  3. Merge if good:   git checkout $current_branch && git merge $WORKTREE_BRANCH"
         log "INFO" "  4. Cleanup:         git worktree remove $WORKTREE_DIR && git branch -D $WORKTREE_BRANCH"

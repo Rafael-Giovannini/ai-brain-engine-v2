@@ -81,41 +81,78 @@ Motor de execucao autonomo que transforma especificacoes em codigo funcional atr
 - `/speckit.analyze` — Analise de consistencia
 
 ### Motor (Execucao e Controle)
+- `/setup-workspace` — Inicializar novo projeto no workspace/ (cria repo, .ralphrc, estrutura)
 - `/ralph-loop` — Loop TDD autonomo com Skinner enforcement
 - `/validate` — Validacao 8+ passes (doc consistency, entities, API, FRs, code quality, BMAD, Ralph config)
 - `/skinner-status` — Status de worktrees, branches, logs
 
 ---
 
+## ARQUITETURA NESTED-REPOS
+
+O motor e um repositorio git independente. Cada projeto vive em `workspace/` como
+seu proprio repositorio git (nested repos, NAO monorepo).
+
+- **Motor** le configs do `engine.yaml` e fornece ferramentas (Ralph, Skinner, hooks)
+- **Projetos** tem seu proprio git, src/, tests/, specs/, docs/
+- `workspace/` esta no `.gitignore` do motor — cada projeto e versionado independentemente
+- Skinner cria worktrees no repo do PROJETO, nao do motor
+- Logs e VIGIL ficam no motor (`.skinner/logs/`, `.skinner/memory/`)
+
+### Inicializar novo projeto
+
+```bash
+# Via skill (recomendado)
+/setup-workspace ghostfit --type node --desc "App de treino"
+
+# Ou manualmente
+mkdir -p workspace/ghostfit && cd workspace/ghostfit && git init
+```
+
+### Rodar Ralph num projeto
+
+```bash
+./ralph-loop.sh ghostfit                  # Loop TDD
+./ralph-loop.sh ghostfit --max-loops 5    # Limitar loops
+./ralph-loop.sh ghostfit --dry-run        # Simular
+```
+
 ## ESTRUTURA DE DIRETORIOS
 
 ```
-ai-brain-engine-v2/
-  CLAUDE.md                    # Este arquivo — governanca do motor
-  engine.yaml                  # Config central — flags por camada
-  ralph-loop.sh                # Orquestrador principal
-  validate.sh                  # Validacao 8+ passes
-  docker-compose.yml           # Langfuse self-hosted
+ai-brain-engine-v2/                      # MOTOR (este repo)
+  CLAUDE.md                              # Governanca do motor
+  engine.yaml                            # Config central — flags por camada
+  ralph-loop.sh                          # Orquestrador principal
+  validate.sh                            # Validacao 8+ passes
+  docker-compose.yml                     # Langfuse self-hosted
   .claude/
-    settings.json              # Permissoes Claude Code
-    hooks/                     # Hooks nativos (PreToolUse, PostToolUse, SessionStart)
-    commands/                  # Skills custom (ralph-loop, validate, skinner-status)
-  .specify/                    # Spec-Kit templates e scripts
-  .ralph/
-    PROMPT.md                  # Template de prompt para Ralph (generico)
-    AGENT.md                   # Template de agent config (generico)
-    fix_plan.md                # Template de task tracker
+    settings.json                        # Permissoes Claude Code
+    hooks/                               # Hooks nativos (PreToolUse, PostToolUse)
+    commands/                            # Skills (setup-workspace, ralph-loop, validate, skinner-status)
+  .specify/                              # Spec-Kit templates e scripts
+  .ralph/                                # Templates GENERICOS (fallback)
+    PROMPT.md                            # Template de prompt para Ralph
+    AGENT.md                             # Template de agent config
+    fix_plan.md                          # Template de task tracker
   .skinner/
-    skinner.sh                 # Enforcement engine
-    memory/                    # Memoria comportamental (VIGIL)
-    logs/                      # Logs de auditoria por sessao
-  docs/                        # BMAD docs (briefs, PRDs, arquitetura)
-  specs/                       # Fonte da verdade (specs, plans, data-models)
-  src/                         # Codigo do projeto
-  tests/
-    unit/                      # Testes unitarios
-    architecture/              # Testes ArchUnit / dependency-cruiser
-    mutation/                  # Config MutaHunter
+    skinner.sh                           # Enforcement engine
+    memory/                              # Memoria comportamental (VIGIL) — compartilhada
+    logs/                                # Logs de auditoria por workspace
+  _bmad/                                 # BMAD Method v6
+  docs/                                  # Docs DO MOTOR (briefs, PRDs)
+  workspace/                             # IGNORADO pelo git do motor
+    ghostfit/                            # Exemplo: repo git independente
+      .git/                              # Repo proprio!
+      .ralphrc                           # Config Ralph do projeto
+      .ralph/                            # Override de templates (opcional)
+        fix_plan.md                      # Tasks do projeto
+        AGENT.md                         # Build/test/run do projeto
+      CLAUDE.md                          # Governanca do projeto
+      src/                               # Codigo fonte
+      tests/                             # Testes
+      specs/                             # Especificacoes
+      docs/                              # Docs do projeto
 ```
 
 ---

@@ -43,6 +43,9 @@ docker-compose.override.yml
 # Spec-Kit memory
 .specify/memory/
 
+# Workspace projects (nested repos — each is independent)
+workspace/
+
 # Build artifacts
 dist/
 build/
