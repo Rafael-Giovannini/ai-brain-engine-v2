@@ -65,7 +65,8 @@ fi
 
 if [ ! -f "$PROJECT_DIR/.ralphrc" ]; then
     echo "ERROR: No .ralphrc found in workspace/$WORKSPACE_NAME/"
-    echo "Run /setup-workspace $WORKSPACE_NAME to configure it."
+    echo "This project exists but isn't configured for the motor yet."
+    echo "Run /setup-workspace $WORKSPACE_NAME to add motor integration files."
     exit 1
 fi
 

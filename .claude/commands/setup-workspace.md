@@ -1,5 +1,5 @@
 ---
-description: "Inicializar um novo projeto no workspace/ do motor. Cria repo git independente com .ralphrc, CLAUDE.md e estrutura basica. Usage: /setup-workspace <nome> [--type node|python|java|bash] [--desc 'descricao']"
+description: "Configurar um projeto no workspace/ do motor. Funciona com projetos novos E existentes. Usage: /setup-workspace <nome> [--type node|python|java|bash] [--desc 'descricao'] [--clone <git-url>]"
 ---
 
 ## User Input
@@ -10,43 +10,68 @@ $ARGUMENTS
 
 ## Goal
 
-Inicializar um novo projeto dentro de `workspace/` do motor AI-Brain Engine v2.
-O projeto sera um **repositorio git independente** (nested repo), nao parte do motor.
+Configurar um projeto dentro de `workspace/` do motor AI-Brain Engine v2.
+Funciona em 3 cenarios:
+
+1. **Projeto novo** — cria do zero com estrutura padrao
+2. **Projeto existente** — ja esta em `workspace/<nome>/` (copiado ou clonado manualmente)
+3. **Clone** — clona de uma URL git para `workspace/<nome>/`
+
+Em todos os casos, adiciona os arquivos do motor (.ralphrc, .ralph/, CLAUDE.md) ao projeto.
 
 ## Instructions
 
 ### 1. Parse Arguments
 
 Extract from user input:
-- `PROJECT_NAME` (required) — nome do projeto (ex: ghostfit, marketplace, api-gateway)
+- `PROJECT_NAME` (required) — nome do projeto
 - `PROJECT_TYPE` (optional, default: node) — tipo: node, python, java, bash
 - `PROJECT_DESC` (optional) — descricao curta do projeto
+- `CLONE_URL` (optional) — URL git para clonar
 
-### 2. Validate
+### 2. Detect Scenario
 
-- Check that `workspace/` directory exists (create if not)
-- Check that `workspace/<PROJECT_NAME>/` does NOT already exist
-- If it exists, ask user if they want to overwrite
-
-### 3. Create Project Structure
-
-```bash
+```
 MOTOR_ROOT=$(pwd)
-PROJECT_DIR="$MOTOR_ROOT/workspace/<PROJECT_NAME>"
-
-mkdir -p "$PROJECT_DIR"/{src,tests,docs,specs}
+PROJECT_DIR="$MOTOR_ROOT/workspace/$PROJECT_NAME"
 ```
 
-### 4. Initialize Git Repo
-
+**Scenario A — Clone:**
+If `CLONE_URL` is provided:
 ```bash
+mkdir -p workspace/
+git clone "$CLONE_URL" "$PROJECT_DIR"
+```
+
+**Scenario B — Existing project:**
+If `workspace/<PROJECT_NAME>/` already exists:
+- Check if it has `.git/` — if yes, it's already a repo (good)
+- Check if it has `.ralphrc` — if yes, already configured, ask user if they want to reconfigure
+- If no `.git/`, ask user: "Esse projeto nao tem repositorio git. Deseja inicializar um?"
+
+**Scenario C — New project:**
+If `workspace/<PROJECT_NAME>/` does NOT exist:
+```bash
+mkdir -p "$PROJECT_DIR"/{src,tests,docs,specs}
 cd "$PROJECT_DIR"
 git init
 ```
 
-### 5. Create .ralphrc (project-specific)
+### 3. Detect Project Type (if not provided)
 
-Write `$PROJECT_DIR/.ralphrc` with:
+If `--type` was not specified and the project already exists, auto-detect:
+- `package.json` exists → node
+- `requirements.txt` or `pyproject.toml` or `setup.py` exists → python
+- `pom.xml` or `build.gradle` exists → java
+- Otherwise → ask user or default to node
+
+### 4. Add Motor Integration Files
+
+These files connect the project to the motor. **Only create if they don't exist** (don't overwrite user's work).
+
+#### 4a. `.ralphrc` (project config for Ralph)
+
+If `.ralphrc` does NOT exist, create it:
 
 ```bash
 # .ralphrc - Ralph project configuration
@@ -81,9 +106,38 @@ Adjust `ALLOWED_TOOLS` based on PROJECT_TYPE:
 - **java**: add `Bash(mvn *),Bash(gradle *)`
 - **bash**: keep minimal
 
-### 6. Create Project CLAUDE.md
+#### 4b. `.ralph/` directory
 
-Write `$PROJECT_DIR/CLAUDE.md` with project-specific governance:
+If `.ralph/` does NOT exist, create it:
+
+Write `.ralph/fix_plan.md`:
+```markdown
+# Fix Plan — <PROJECT_NAME>
+
+## Tasks
+
+- [ ] Task 1: (adicionar tasks aqui)
+```
+
+Write `.ralph/AGENT.md`:
+```markdown
+# Agent Config — <PROJECT_NAME>
+
+## Build
+<commands based on PROJECT_TYPE — detect from package.json, Makefile, etc. if possible>
+
+## Test
+<commands based on PROJECT_TYPE>
+
+## Run
+<commands based on PROJECT_TYPE>
+```
+
+If AGENT.md can be auto-detected (e.g., read package.json scripts), populate it automatically.
+
+#### 4c. `CLAUDE.md` (project governance)
+
+If `CLAUDE.md` does NOT exist, create it:
 
 ```markdown
 # <PROJECT_NAME>
@@ -93,7 +147,7 @@ This project runs under **AI-Brain Engine v2** motor.
 Motor root: `../../` (relative to this project)
 
 ## Tech Stack
-<based on PROJECT_TYPE>
+<based on PROJECT_TYPE and detected dependencies>
 
 ## Key Commands
 - Run Ralph: `cd <MOTOR_ROOT> && ./ralph-loop.sh <PROJECT_NAME>`
@@ -101,102 +155,88 @@ Motor root: `../../` (relative to this project)
 - Skinner Status: From motor, run `/skinner-status <PROJECT_NAME>`
 
 ## Directory Structure
-- `src/` — Source code
-- `tests/` — Test files
-- `docs/` — Project documentation
-- `specs/` — Specifications (source of truth)
+<detect and document existing structure>
 
 ## Language
 - Docs in PT-BR
 - Code in English
 ```
 
-### 7. Create .ralph/ Override (project-specific)
+#### 4d. `.gitignore` additions
 
-Copy Ralph templates from motor and customize:
+If `.gitignore` exists, append motor-specific entries (if not already present):
+```
+# Motor worktrees (Skinner)
+.worktrees/
+```
 
+If `.gitignore` does NOT exist, create a standard one for the project type.
+
+### 5. Add `.worktrees/` to project's `.gitignore`
+
+Skinner creates worktrees inside the project. Make sure they're ignored:
 ```bash
-mkdir -p "$PROJECT_DIR/.ralph"
+echo ".worktrees/" >> "$PROJECT_DIR/.gitignore"  # if not already there
 ```
 
-Write `$PROJECT_DIR/.ralph/fix_plan.md`:
-```markdown
-# Fix Plan — <PROJECT_NAME>
+### 6. Create Missing Directories
 
-## Tasks
+Only create directories that don't exist and are appropriate:
+- `specs/` — always (source of truth for the motor)
+- `src/`, `tests/`, `docs/` — only for new projects (don't touch existing structure)
 
-- [ ] Task 1: Setup inicial do projeto
-- [ ] Task 2: (adicionar tasks aqui)
-```
+### 7. Commit Integration Files
 
-Write `$PROJECT_DIR/.ralph/AGENT.md`:
-```markdown
-# Agent Config — <PROJECT_NAME>
-
-## Build
-<commands based on PROJECT_TYPE>
-
-## Test
-<commands based on PROJECT_TYPE>
-
-## Run
-<commands based on PROJECT_TYPE>
-```
-
-### 8. Create .gitignore for the project
-
-Write `$PROJECT_DIR/.gitignore`:
-```
-node_modules/
-dist/
-build/
-.env
-.env.local
-__pycache__/
-*.pyc
-.venv/
-.DS_Store
-Thumbs.db
-```
-
-### 9. Initial Commit
-
+If there are new files to commit:
 ```bash
 cd "$PROJECT_DIR"
-git add -A
-git commit -m "chore: initial project setup via AI-Brain Engine v2
+git add .ralphrc .ralph/ CLAUDE.md .gitignore
+git commit -m "chore: integrate with AI-Brain Engine v2
 
-Initialized by /setup-workspace skill.
+Added motor integration files (.ralphrc, .ralph/, CLAUDE.md).
 Motor: AI-Brain Engine v2
 Type: <PROJECT_TYPE>"
 ```
 
-### 10. Show Summary
+### 8. Show Summary
 
+Adapt output based on scenario:
+
+**For existing project:**
+```
+Projeto configurado para o motor!
+
+  Projeto: <PROJECT_NAME>
+  Tipo: <PROJECT_TYPE> (detectado automaticamente)
+  Local: workspace/<PROJECT_NAME>/
+  Git: repositorio existente mantido
+
+Arquivos adicionados:
+  .ralphrc       — Config Ralph do projeto
+  .ralph/        — Templates Ralph (fix_plan, AGENT)
+  CLAUDE.md      — Governanca do projeto
+  specs/         — Pasta de especificacoes (criada)
+
+Proximos passos:
+  1. Revise .ralphrc e ajuste ALLOWED_TOOLS se necessario
+  2. Revise .ralph/AGENT.md e ajuste comandos de build/test
+  3. Adicione tasks em .ralph/fix_plan.md
+  4. Rode Ralph: ./ralph-loop.sh <PROJECT_NAME>
+```
+
+**For new project:**
 ```
 Workspace criado com sucesso!
 
   Projeto: <PROJECT_NAME>
   Tipo: <PROJECT_TYPE>
   Local: workspace/<PROJECT_NAME>/
-  Git: repositorio independente (nested repo)
-
-Estrutura:
-  workspace/<PROJECT_NAME>/
-    src/           — Codigo fonte
-    tests/         — Testes
-    docs/          — Documentacao
-    specs/         — Especificacoes
-    .ralph/        — Config Ralph (override)
-    .ralphrc       — Config do projeto
-    CLAUDE.md      — Governanca do projeto
-    .gitignore     — Git ignore
+  Git: repositorio independente (novo)
 
 Proximos passos:
   1. Adicione specs em workspace/<PROJECT_NAME>/specs/
-  2. Adicione tasks em workspace/<PROJECT_NAME>/.ralph/fix_plan.md
+  2. Adicione tasks em .ralph/fix_plan.md
   3. Rode Ralph: ./ralph-loop.sh <PROJECT_NAME>
-  4. Ou abra o projeto diretamente: cd workspace/<PROJECT_NAME>
 ```
 
 ## Language
