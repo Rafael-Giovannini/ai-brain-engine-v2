@@ -1,0 +1,61 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/rafael.giovannini/.claude/config/bmad/templates/**)",
+      "Read(//c/Users/rafael.giovannini/.claude/config/bmad/**)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git stash *)",
+      "Bash(git merge *)",
+      "Bash(git tag *)",
+      "Bash(git worktree *)",
+      "Bash(docker compose *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(uvx *)",
+      "Bash(mkdir *)",
+      "Bash(ls *)",
+      "Bash(./ralph-loop.sh *)",
+      "Bash(bash ./ralph-loop.sh *)",
+      "Bash(./validate.sh *)",
+      "Bash(bash ./validate.sh *)",
+      "Bash(claude *)",
+      "Bash(chmod +x ralph-loop.sh validate.sh .skinner/skinner.sh .claude/hooks/pre-write-check.sh .claude/hooks/post-edit-lint.sh)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-write-check.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-edit-lint.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

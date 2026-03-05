@@ -1,0 +1,102 @@
+# AI-Brain Engine v2 — Configuracao Central
+# Cada camada e ativavel/desativavel independentemente.
+# Camada desativada = zero overhead (nao carrega, nao executa).
+
+version: "2.0.0"
+
+# ─── Camadas Core (sempre ativas) ──────────────────────────────────────────
+# BMAD, Spec-Kit, Ralph, Skinner sao a base do motor.
+# Nao tem flag — sao obrigatorios.
+
+# ─── Camadas Opcionais ─────────────────────────────────────────────────────
+
+layers:
+  hooks:
+    enabled: true
+    description: "Hooks nativos Claude Code (PreToolUse, PostToolUse, SessionStart)"
+    config:
+      block_write_without_test: true
+      protected_files:
+        - "specs/**/*.md"
+        - "CLAUDE.md"
+        - "engine.yaml"
+        - ".skinner/skinner.sh"
+      auto_lint_on_edit: false
+      lint_command: ""  # Ex: "npx eslint --fix", "dotnet format", "./gradlew spotlessApply"
+
+  langfuse:
+    enabled: true
+    description: "Observabilidade — tracing de chamadas LLM"
+    config:
+      host: "http://localhost:3000"
+      public_key: ""  # Configurar apos docker compose up
+      secret_key: ""  # Configurar apos docker compose up
+
+  vigil:
+    enabled: true
+    description: "Memoria comportamental persistente (VIGIL pattern)"
+    config:
+      memory_dir: ".skinner/memory"
+      decay_half_life_days: 7
+      max_context_errors: 5  # Top N erros injetados no prompt do Ralph
+      roses_buds_thorns: true
+
+  archunit:
+    enabled: false
+    description: "Testes de arquitetura como gate no Skinner"
+    config:
+      tool: "auto"  # auto | archunit | dependency-cruiser | custom
+      rules_file: "tests/architecture/rules.yaml"
+      max_class_lines: 300
+      forbidden_imports: []  # Ex: ["domain -> infrastructure", "domain -> ui"]
+
+  mutahunter:
+    enabled: false
+    description: "Mutation testing para verificar efetividade dos testes"
+    config:
+      min_score: 60  # Porcentagem minima de mutation score
+      reject_on_failure: true  # Skinner rejeita se score < min_score
+
+  git_ai:
+    enabled: false
+    description: "Rastreio de autoria AI vs humano por linha"
+    config:
+      store_in_git_notes: true
+
+  code_review:
+    enabled: false
+    description: "Review automatico pre-merge"
+    config:
+      tool: "anthropic"  # anthropic | coderabbit
+      min_score: 70  # Score minimo 0-100
+      block_on_critical: true
+
+  branch_explorer:
+    enabled: false
+    description: "Branch exploratorio para situacoes incertas"
+    config:
+      auto_timeout_minutes: 30
+      compare_metrics: ["tests", "coverage", "lint"]
+
+# ─── Skinner Config ────────────────────────────────────────────────────────
+
+skinner:
+  max_loops: 20
+  circuit_breaker:
+    no_progress_threshold: 3
+    same_error_threshold: 5
+    output_decline_threshold: 70
+  log_retention_days: 30
+  auto_commit: true
+  auto_revert_on_circular_error: true
+
+# ─── Ralph Config Defaults ─────────────────────────────────────────────────
+
+ralph:
+  claude_code_cmd: "claude"
+  max_calls_per_hour: 100
+  timeout_minutes: 15
+  output_format: "json"
+  session_continuity: true
+  session_expiry_hours: 24
+  task_sources: "local"

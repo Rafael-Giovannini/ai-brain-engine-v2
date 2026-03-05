@@ -1,0 +1,58 @@
+# Langfuse Self-Hosted — AI-Brain Engine v2
+# Observabilidade de chamadas LLM
+#
+# Uso:
+#   docker compose up -d      # Iniciar
+#   docker compose down        # Parar
+#   docker compose logs -f     # Ver logs
+#
+# Acesso: http://localhost:3000
+# Primeiro acesso: criar conta admin local
+
+version: "3.8"
+
+services:
+  langfuse-server:
+    image: langfuse/langfuse:2
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@db:5432/langfuse
+      - NEXTAUTH_SECRET=mysecret-change-in-production
+      - SALT=mysalt-change-in-production
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=true
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
+    networks:
+      - langfuse
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - langfuse
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  langfuse:
+    driver: bridge

@@ -1,0 +1,49 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Skinner logs (keep structure, ignore content)
+.skinner/logs/**/*.log
+
+# Langfuse data
+langfuse-data/
+postgres-data/
+redis-data/
+
+# Node
+node_modules/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Spec-Kit memory
+.specify/memory/
+
+# Build artifacts
+dist/
+build/
+out/

@@ -1,0 +1,20 @@
+project:
+  name: ai-brain-engine-v2
+  type: "Developer Tooling / Autonomous Execution Engine"
+  level: 3
+  created: "2026-03-05"
+  last_updated: "2026-03-05"
+
+workflows:
+  product-brief:
+    status: "docs/product-brief-ai-brain-engine-v2-2026-03-05.md"
+    completed_at: "2026-03-05"
+  prd:
+    status: "docs/prd-ai-brain-engine-v2-2026-03-05.md"
+    completed_at: "2026-03-05"
+  architecture:
+    status: not-applicable
+  sprint-planning:
+    status: not-applicable
+  ux-design:
+    status: not-applicable
