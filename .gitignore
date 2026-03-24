@@ -43,6 +43,9 @@ docker-compose.override.yml
 # Spec-Kit memory
 .specify/memory/
 
+# Project configs (per-project, not versioned in motor)
+configs/
+
 # Workspace projects (nested repos — each is independent)
 workspace/
 
