@@ -12,7 +12,7 @@
 #   ./ralph-loop.sh ghostfit --prompt "fix X"  # Task especifica
 #
 # O primeiro argumento e o nome do workspace (pasta em workspace/).
-# Cada workspace e um repo git independente com seu proprio .ralphrc.
+# Config do projeto fica em configs/<workspace>/ no motor (nao no projeto).
 ###############################################################################
 
 MOTOR_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -37,9 +37,10 @@ if [ -z "$1" ] || [[ "$1" == --* ]]; then
     for dir in "$MOTOR_ROOT"/workspace/*/; do
         if [ -d "$dir/.git" ]; then
             name=$(basename "$dir")
-            has_ralphrc=""
-            [ -f "$dir/.ralphrc" ] && has_ralphrc=" (configured)"
-            echo "  - $name$has_ralphrc"
+            configured=""
+            [ -d "$MOTOR_ROOT/configs/$name" ] && configured=" (configured)"
+            [ -f "$dir/.ralphrc" ] && configured=" (configured)"
+            echo "  - $name$configured"
         fi
     done
     exit 1
@@ -63,10 +64,12 @@ if [ ! -d "$PROJECT_DIR/.git" ]; then
     exit 1
 fi
 
-if [ ! -f "$PROJECT_DIR/.ralphrc" ]; then
-    echo "ERROR: No .ralphrc found in workspace/$WORKSPACE_NAME/"
-    echo "This project exists but isn't configured for the motor yet."
-    echo "Run /setup-workspace $WORKSPACE_NAME to add motor integration files."
+# Check for config in motor configs/ or in project
+CONFIG_DIR="$MOTOR_ROOT/configs/$WORKSPACE_NAME"
+if [ ! -f "$CONFIG_DIR/.ralphrc" ] && [ ! -f "$PROJECT_DIR/.ralphrc" ]; then
+    echo "ERROR: No .ralphrc found for workspace '$WORKSPACE_NAME'"
+    echo "Expected at: configs/$WORKSPACE_NAME/.ralphrc or workspace/$WORKSPACE_NAME/.ralphrc"
+    echo "Run /setup-workspace $WORKSPACE_NAME to configure it."
     exit 1
 fi
 

@@ -21,6 +21,7 @@ WORKSPACE_NAME=""
 FEATURE_NAME=""
 BRANCH_NAME=""
 DRY_RUN=false
+WORKTREE_PATH=""
 
 # First arg must be workspace name
 if [ -z "${1:-}" ] || [[ "${1:-}" == --* ]]; then
@@ -54,51 +55,54 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ─── Branch checkout (if requested) ─────────────────────────────────────────
-ORIGINAL_BRANCH=""
-if [ -n "$BRANCH_NAME" ]; then
-    ORIGINAL_BRANCH=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD)
-    echo "Switching to branch: $BRANCH_NAME"
-    echo "  (will return to $ORIGINAL_BRANCH after validation)"
-    echo ""
-
-    # Check if it's a worktree branch — try to find the worktree path
-    WORKTREE_PATH=$(git -C "$SCRIPT_DIR" worktree list --porcelain | grep -B2 "branch refs/heads/$BRANCH_NAME" | grep "^worktree " | sed 's/^worktree //')
-
-    if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
-        echo "Found worktree at: $WORKTREE_PATH"
-        echo "Validating directly from worktree (no checkout needed)."
-        echo ""
-        SCRIPT_DIR="$WORKTREE_PATH"
-    else
-        # No worktree, do a regular checkout
-        git -C "$SCRIPT_DIR" stash --quiet 2>/dev/null || true
-        git -C "$SCRIPT_DIR" checkout "$BRANCH_NAME" --quiet 2>/dev/null || {
-            echo "ERROR: Could not checkout branch: $BRANCH_NAME"
-            git -C "$SCRIPT_DIR" stash pop --quiet 2>/dev/null || true
-            exit 1
-        }
-    fi
-fi
-
-# Cleanup: return to original branch on exit
-cleanup_branch() {
-    if [ -n "$ORIGINAL_BRANCH" ] && [ -z "$WORKTREE_PATH" ]; then
-        echo ""
-        echo "Returning to branch: $ORIGINAL_BRANCH"
-        git -C "$SCRIPT_DIR" checkout "$ORIGINAL_BRANCH" --quiet 2>/dev/null || true
-        git -C "$SCRIPT_DIR" stash pop --quiet 2>/dev/null || true
-    fi
-}
-trap cleanup_branch EXIT
-
 # ─── Resolve workspace ──────────────────────────────────────────────────────
+# Must resolve workspace BEFORE branch checkout, since branches live in the PROJECT repo
 WORKSPACE_DIR="$SCRIPT_DIR/workspace/$WORKSPACE_NAME"
 
 if [ ! -d "$WORKSPACE_DIR" ]; then
     echo "ERROR: Workspace not found: $WORKSPACE_DIR"
     exit 1
 fi
+
+# ─── Branch checkout (if requested) ─────────────────────────────────────────
+# Branches are in the PROJECT's git repo (not the motor)
+ORIGINAL_BRANCH=""
+if [ -n "$BRANCH_NAME" ]; then
+    ORIGINAL_BRANCH=$(git -C "$WORKSPACE_DIR" rev-parse --abbrev-ref HEAD)
+    echo "Switching to branch: $BRANCH_NAME"
+    echo "  (will return to $ORIGINAL_BRANCH after validation)"
+    echo ""
+
+    # Check if it's a worktree branch — try to find the worktree path
+    WORKTREE_PATH=$(git -C "$WORKSPACE_DIR" worktree list --porcelain | grep -B2 "branch refs/heads/$BRANCH_NAME" | grep "^worktree " | sed 's/^worktree //' || true)
+
+    if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
+        echo "Found worktree at: $WORKTREE_PATH"
+        echo "Validating directly from worktree (no checkout needed)."
+        echo ""
+        # Override WORKSPACE_DIR to point to the worktree
+        WORKSPACE_DIR="$WORKTREE_PATH"
+    else
+        # No worktree, do a regular checkout in the project repo
+        git -C "$WORKSPACE_DIR" stash --quiet 2>/dev/null || true
+        git -C "$WORKSPACE_DIR" checkout "$BRANCH_NAME" --quiet 2>/dev/null || {
+            echo "ERROR: Could not checkout branch: $BRANCH_NAME"
+            git -C "$WORKSPACE_DIR" stash pop --quiet 2>/dev/null || true
+            exit 1
+        }
+    fi
+fi
+
+# Cleanup: return to original branch on exit (in the PROJECT repo)
+cleanup_branch() {
+    if [ -n "$ORIGINAL_BRANCH" ] && [ -z "$WORKTREE_PATH" ]; then
+        echo ""
+        echo "Returning to branch: $ORIGINAL_BRANCH"
+        git -C "$WORKSPACE_DIR" checkout "$ORIGINAL_BRANCH" --quiet 2>/dev/null || true
+        git -C "$WORKSPACE_DIR" stash pop --quiet 2>/dev/null || true
+    fi
+}
+trap cleanup_branch EXIT
 
 SPECS_DIR="$WORKSPACE_DIR/specs"
 
@@ -185,10 +189,28 @@ if [ -d "$DOCS_DIR" ]; then
 fi
 
 # ─── Discover Ralph config ───────────────────────────────────────────────────
-RALPH_RC="$WORKSPACE_DIR/.ralphrc"
-RALPH_PROMPT="$WORKSPACE_DIR/.ralph/PROMPT.md"
-RALPH_AGENT="$WORKSPACE_DIR/.ralph/AGENT.md"
-RALPH_FIXPLAN="$WORKSPACE_DIR/.ralph/fix_plan.md"
+# Resolution order: motor configs/<workspace>/ → project workspace/<workspace>/
+MOTOR_CONFIG_DIR="$SCRIPT_DIR/configs/$WORKSPACE_NAME"
+
+if [ -f "$MOTOR_CONFIG_DIR/.ralphrc" ]; then
+    RALPH_RC="$MOTOR_CONFIG_DIR/.ralphrc"
+elif [ -f "$WORKSPACE_DIR/.ralphrc" ]; then
+    RALPH_RC="$WORKSPACE_DIR/.ralphrc"
+else
+    RALPH_RC=""
+fi
+
+if [ -d "$MOTOR_CONFIG_DIR/.ralph" ]; then
+    RALPH_CONFIG_SRC="$MOTOR_CONFIG_DIR/.ralph"
+elif [ -d "$WORKSPACE_DIR/.ralph" ]; then
+    RALPH_CONFIG_SRC="$WORKSPACE_DIR/.ralph"
+else
+    RALPH_CONFIG_SRC=""
+fi
+
+RALPH_PROMPT="${RALPH_CONFIG_SRC:+$RALPH_CONFIG_SRC/PROMPT.md}"
+RALPH_AGENT="${RALPH_CONFIG_SRC:+$RALPH_CONFIG_SRC/AGENT.md}"
+RALPH_FIXPLAN="${RALPH_CONFIG_SRC:+$RALPH_CONFIG_SRC/fix_plan.md}"
 
 echo "Spec files found:"
 echo "  spec.md:         $([ -f "$SPEC_FILE" ] && echo "YES" || echo "MISSING")"
@@ -197,8 +219,8 @@ echo "  data-model.md:   $([ -f "$DATA_MODEL_FILE" ] && echo "YES" || echo "MISS
 echo "  api-contracts:   $([ -n "$API_CONTRACT_FILE" ] && echo "YES" || echo "MISSING")"
 echo ""
 echo "BMAD docs:         $([ -n "$BMAD_DOCS" ] && echo "$(echo $BMAD_DOCS | wc -w) files" || echo "NOT FOUND")"
-echo "Ralph config:      $([ -f "$RALPH_RC" ] && echo "YES" || echo "MISSING")"
-echo "Ralph .ralph/:     $([ -d "$WORKSPACE_DIR/.ralph" ] && echo "YES" || echo "MISSING")"
+echo "Ralph config:      $([ -n "$RALPH_RC" ] && [ -f "$RALPH_RC" ] && echo "YES ($RALPH_RC)" || echo "MISSING")"
+echo "Ralph .ralph/:     $([ -n "$RALPH_CONFIG_SRC" ] && [ -d "$RALPH_CONFIG_SRC" ] && echo "YES ($RALPH_CONFIG_SRC)" || echo "MISSING")"
 echo ""
 echo "Source code:       $([ -n "$SRC_DIR" ] && echo "$SRC_DIR" || echo "NOT FOUND")"
 echo "Test directories:  $([ -n "$TEST_DIRS" ] && echo "$TEST_DIRS" || echo "NOT FOUND")"
@@ -226,10 +248,10 @@ $([ -n "$API_CONTRACT_FILE" ] && echo "- api-contracts: $API_CONTRACT_FILE" || e
 $(if [ -n "$BMAD_DOCS" ]; then for doc in $BMAD_DOCS; do echo "- $doc"; done; else echo "- No BMAD docs found"; fi)
 
 ## Ralph Config
-$([ -f "$RALPH_RC" ] && echo "- .ralphrc: $RALPH_RC" || echo "- .ralphrc: NOT AVAILABLE")
-$([ -f "$RALPH_PROMPT" ] && echo "- PROMPT.md: $RALPH_PROMPT" || echo "- PROMPT.md: NOT AVAILABLE")
-$([ -f "$RALPH_AGENT" ] && echo "- AGENT.md: $RALPH_AGENT" || echo "- AGENT.md: NOT AVAILABLE")
-$([ -f "$RALPH_FIXPLAN" ] && echo "- fix_plan.md: $RALPH_FIXPLAN" || echo "- fix_plan.md: NOT AVAILABLE")
+$([ -n "$RALPH_RC" ] && [ -f "$RALPH_RC" ] && echo "- .ralphrc: $RALPH_RC" || echo "- .ralphrc: NOT AVAILABLE")
+$([ -n "$RALPH_PROMPT" ] && [ -f "$RALPH_PROMPT" ] && echo "- PROMPT.md: $RALPH_PROMPT" || echo "- PROMPT.md: NOT AVAILABLE")
+$([ -n "$RALPH_AGENT" ] && [ -f "$RALPH_AGENT" ] && echo "- AGENT.md: $RALPH_AGENT" || echo "- AGENT.md: NOT AVAILABLE")
+$([ -n "$RALPH_FIXPLAN" ] && [ -f "$RALPH_FIXPLAN" ] && echo "- fix_plan.md: $RALPH_FIXPLAN" || echo "- fix_plan.md: NOT AVAILABLE")
 
 ## Source Code
 $([ -n "$SRC_DIR" ] && echo "- Source directory: $SRC_DIR" || echo "- NO SOURCE CODE FOUND — skip code validation passes, focus on doc consistency only")

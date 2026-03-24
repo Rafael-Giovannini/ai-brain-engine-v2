@@ -22,6 +22,8 @@ Execute the Ralph autonomous development loop with Skinner enforcement for a giv
 
 2. **If no workspace provided**, list available workspaces and ask user to pick one:
    ```bash
+   # Check configs/ (centralized) and workspace/ (legacy) for configured projects
+   for dir in configs/*/; do [ -f "$dir/.ralphrc" ] && basename "$dir"; done
    for dir in workspace/*/; do [ -f "$dir/.ralphrc" ] && basename "$dir"; done
    ```
 

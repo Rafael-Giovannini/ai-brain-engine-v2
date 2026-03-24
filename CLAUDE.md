@@ -94,7 +94,8 @@ O motor e um repositorio git independente. Cada projeto vive em `workspace/` com
 seu proprio repositorio git (nested repos, NAO monorepo).
 
 - **Motor** le configs do `engine.yaml` e fornece ferramentas (Ralph, Skinner, hooks)
-- **Projetos** tem seu proprio git, src/, tests/, specs/, docs/
+- **Configs** de cada projeto ficam em `configs/<projeto>/` no motor (.ralphrc, .ralph/, CLAUDE.md)
+- **Projetos** tem seu proprio git com apenas codigo, specs e docs — sem arquivos do motor
 - `workspace/` esta no `.gitignore` do motor — cada projeto e versionado independentemente
 - Skinner cria worktrees no repo do PROJETO, nao do motor
 - Logs e VIGIL ficam no motor (`.skinner/logs/`, `.skinner/memory/`)
@@ -132,25 +133,23 @@ ai-brain-engine-v2/                      # MOTOR (este repo)
     commands/                            # Skills (setup-workspace, ralph-loop, validate, skinner-status)
   .specify/                              # Spec-Kit templates e scripts
   .ralph/                                # Templates GENERICOS (fallback)
-    PROMPT.md                            # Template de prompt para Ralph
     AGENT.md                             # Template de agent config
     fix_plan.md                          # Template de task tracker
   .skinner/
     skinner.sh                           # Enforcement engine
     memory/                              # Memoria comportamental (VIGIL) — compartilhada
     logs/                                # Logs de auditoria por workspace
+  configs/                               # Configs por projeto (versionadas no motor)
+    ghostfit/                            # Config do projeto ghostfit
+      .ralphrc                           # Config Ralph
+      .ralph/                            # Templates Ralph (AGENT, fix_plan)
+      CLAUDE.md                          # Governanca do projeto
   _bmad/                                 # BMAD Method v6
   docs/                                  # Docs DO MOTOR (briefs, PRDs)
   workspace/                             # IGNORADO pelo git do motor
     ghostfit/                            # Exemplo: repo git independente
       .git/                              # Repo proprio!
-      .ralphrc                           # Config Ralph do projeto
-      .ralph/                            # Override de templates (opcional)
-        fix_plan.md                      # Tasks do projeto
-        AGENT.md                         # Build/test/run do projeto
-      CLAUDE.md                          # Governanca do projeto
-      src/                               # Codigo fonte
-      tests/                             # Testes
+      android/                           # Codigo fonte
       specs/                             # Especificacoes
       docs/                              # Docs do projeto
 ```

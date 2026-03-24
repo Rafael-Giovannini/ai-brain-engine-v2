@@ -92,29 +92,37 @@ MUTAHUNTER_ENABLED=$(is_layer_enabled "mutahunter")
 LANGFUSE_ENABLED=$(is_layer_enabled "langfuse")
 
 # ─── Workspace Config ──────────────────────────────────────────────────────
-# .ralphrc and .ralph/ come from the PROJECT (overrides motor templates)
-RALPHRC="$PROJECT_DIR/.ralphrc"
-RALPH_DIR="$PROJECT_DIR/.ralph"
+# Config resolution order: motor configs/<workspace>/ → project dir → motor .ralph/ (generic)
+CONFIG_DIR="$MOTOR_ROOT/configs/$WORKSPACE_NAME"
 
-# Fallback to motor templates if project doesn't have its own
-if [ ! -d "$RALPH_DIR" ]; then
-    RALPH_DIR="$MOTOR_ROOT/.ralph"
-fi
-
-if [ -f "$RALPHRC" ]; then
-    source "$RALPHRC"
+# .ralphrc: motor configs/ first, then project
+if [ -f "$CONFIG_DIR/.ralphrc" ]; then
+    RALPHRC="$CONFIG_DIR/.ralphrc"
+elif [ -f "$PROJECT_DIR/.ralphrc" ]; then
+    RALPHRC="$PROJECT_DIR/.ralphrc"
 else
-    echo "ERROR: No .ralphrc found at $RALPHRC"
+    echo "ERROR: No .ralphrc found for workspace '$WORKSPACE_NAME'"
+    echo "Expected at: $CONFIG_DIR/.ralphrc or $PROJECT_DIR/.ralphrc"
     exit 1
 fi
 
-# Defaults (overridden by .ralphrc or engine.yaml)
-PROJECT_NAME="${PROJECT_NAME:-$WORKSPACE_NAME}"
-PROJECT_ROOT="${PROJECT_ROOT:-.}"
-CLAUDE_CODE_CMD="${CLAUDE_CODE_CMD:-claude}"
-CB_NO_PROGRESS_THRESHOLD="${CB_NO_PROGRESS_THRESHOLD:-3}"
-CB_SAME_ERROR_THRESHOLD="${CB_SAME_ERROR_THRESHOLD:-5}"
-MAX_LOOPS="${MAX_LOOPS_ARG:-${MAX_LOOPS:-20}}"
+# .ralph/ templates: motor configs/ first, then project, then motor generic
+if [ -d "$CONFIG_DIR/.ralph" ]; then
+    RALPH_DIR="$CONFIG_DIR/.ralph"
+elif [ -d "$PROJECT_DIR/.ralph" ]; then
+    RALPH_DIR="$PROJECT_DIR/.ralph"
+else
+    RALPH_DIR="$MOTOR_ROOT/.ralph"
+fi
+
+# CLAUDE.md for the project: motor configs/ first, then project
+if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
+    PROJECT_CLAUDE_MD="$CONFIG_DIR/CLAUDE.md"
+elif [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+    PROJECT_CLAUDE_MD="$PROJECT_DIR/CLAUDE.md"
+else
+    PROJECT_CLAUDE_MD=""
+fi
 
 # ─── State tracking ─────────────────────────────────────────────────────────
 WORKTREE_DIR=""
@@ -143,6 +151,19 @@ log() {
 log_separator() {
     echo "────────────────────────────────────────────────────" | tee -a "$LOG_FILE"
 }
+
+# ─── Load config ─────────────────────────────────────────────────────────────
+source "$RALPHRC"
+log "INFO" "Config loaded from: $RALPHRC"
+log "INFO" "Ralph templates from: $RALPH_DIR"
+
+# Defaults (overridden by .ralphrc or engine.yaml)
+PROJECT_NAME="${PROJECT_NAME:-$WORKSPACE_NAME}"
+PROJECT_ROOT="${PROJECT_ROOT:-.}"
+CLAUDE_CODE_CMD="${CLAUDE_CODE_CMD:-claude}"
+CB_NO_PROGRESS_THRESHOLD="${CB_NO_PROGRESS_THRESHOLD:-3}"
+CB_SAME_ERROR_THRESHOLD="${CB_SAME_ERROR_THRESHOLD:-5}"
+MAX_LOOPS="${MAX_LOOPS_ARG:-${MAX_LOOPS:-20}}"
 
 # ─── VIGIL: Behavioral Memory ─────────────────────────────────────────────
 VIGIL_FILE="$MEMORY_DIR/vigil.jsonl"
@@ -195,6 +216,182 @@ $context"
     fi
 }
 
+# ─── Template Resolution ──────────────────────────────────────────────────
+# Resolves {{PLACEHOLDER}} values in generic .ralph/ templates using data from
+# .ralphrc, AGENT.md, and CLAUDE.md. This ensures Ralph gets a proper system prompt
+# even when project-specific templates are not provided.
+
+extract_section() {
+    # Extract content between ## $section_name and the next ## heading
+    local file="$1"
+    local section="$2"
+    if [ -f "$file" ]; then
+        sed -n "/^## ${section}/,/^## /{ /^## ${section}/d; /^## /d; p; }" "$file" | sed '/^$/{ N; /^\n$/d; }' | sed -e 's/^[[:space:]]*//' -e '/^$/d'
+    fi
+}
+
+# Build a substitution map from project context.
+# Sets global associative-like vars: TPL_* for each known placeholder.
+build_template_vars() {
+    local wt_ralph="$WORKTREE_DIR/.ralph"
+    local agent_md="$wt_ralph/AGENT.md"
+    local claude_md="$WORKTREE_DIR/CLAUDE.md"
+
+    # Simple vars (from .ralphrc)
+    TPL_PROJECT_NAME="$PROJECT_NAME"
+    TPL_PROJECT_TYPE="${PROJECT_TYPE:-unknown}"
+    TPL_PROJECT_ROOT="${PROJECT_ROOT:-.}"
+    TPL_BRANCH="$WORKTREE_BRANCH"
+
+    # Multi-line vars extracted from AGENT.md
+    TPL_TECH_STACK="" TPL_ARCHITECTURE="" TPL_SPECS_AND_DOCS=""
+    TPL_TEST_COMMANDS="" TPL_PROJECT_OVERVIEW="" TPL_VIGIL_CONTEXT=""
+    TPL_PREREQUISITES="" TPL_BUILD_COMMANDS="" TPL_RUN_COMMANDS=""
+    TPL_PROJECT_STRUCTURE="" TPL_NOTES=""
+    TPL_SPEC_PATH="" TPL_PLAN_PATH="" TPL_STORY_1_NAME=""
+
+    if [ -f "$agent_md" ]; then
+        TPL_TECH_STACK=$(extract_section "$agent_md" "Tech Stack")
+        TPL_ARCHITECTURE=$(extract_section "$agent_md" "Architecture")
+        TPL_SPECS_AND_DOCS=$(extract_section "$agent_md" "Specs (Source of Truth)")
+        TPL_TEST_COMMANDS=$(extract_section "$agent_md" "Build & Test")
+        TPL_PREREQUISITES=$(extract_section "$agent_md" "Prerequisites")
+        TPL_BUILD_COMMANDS=$(extract_section "$agent_md" "Build Instructions")
+        TPL_RUN_COMMANDS=$(extract_section "$agent_md" "Install & Run")
+        TPL_PROJECT_STRUCTURE=$(extract_section "$agent_md" "Project Structure" || extract_section "$agent_md" "Architecture")
+        TPL_NOTES=$(extract_section "$agent_md" "Notes")
+    fi
+
+    # Fallback to CLAUDE.md if AGENT.md sections are empty or have unresolved placeholders
+    if [ -f "$claude_md" ]; then
+        if [ -z "$TPL_TECH_STACK" ] || echo "$TPL_TECH_STACK" | grep -q '{{'; then
+            TPL_TECH_STACK=$(extract_section "$claude_md" "Tech Stack")
+        fi
+        if [ -z "$TPL_PROJECT_OVERVIEW" ]; then
+            TPL_PROJECT_OVERVIEW=$(extract_section "$claude_md" "Governance" | head -3)
+        fi
+        if [ -z "$TPL_PROJECT_STRUCTURE" ] || echo "$TPL_PROJECT_STRUCTURE" | grep -q '{{'; then
+            TPL_PROJECT_STRUCTURE=$(extract_section "$claude_md" "Directory Structure")
+        fi
+    fi
+
+    # Detect spec/plan paths from specs/ directory
+    local specs_dir="$WORKTREE_DIR/specs"
+    if [ -d "$specs_dir" ]; then
+        local feature_dir
+        feature_dir=$(ls -d "$specs_dir"/[0-9]*/ 2>/dev/null | sort -V | tail -1)
+        if [ -n "$feature_dir" ]; then
+            feature_dir="${feature_dir%/}"
+            [ -f "$feature_dir/spec.md" ] && TPL_SPEC_PATH="${feature_dir#$WORKTREE_DIR/}/spec.md"
+            [ -f "$feature_dir/plan.md" ] && TPL_PLAN_PATH="${feature_dir#$WORKTREE_DIR/}/plan.md"
+            # Extract first story name from spec.md
+            if [ -f "$feature_dir/spec.md" ]; then
+                TPL_STORY_1_NAME=$(grep -m1 "User Story 1" "$feature_dir/spec.md" | sed 's/.*User Story 1[^—]*— *//' | sed 's/ *(.*//' || echo "Core Feature")
+            fi
+        elif [ -f "$specs_dir/spec.md" ]; then
+            TPL_SPEC_PATH="specs/spec.md"
+            [ -f "$specs_dir/plan.md" ] && TPL_PLAN_PATH="specs/plan.md"
+        fi
+    fi
+
+    # Final fallbacks
+    : "${TPL_TECH_STACK:=See AGENT.md for tech stack details}"
+    : "${TPL_ARCHITECTURE:=See AGENT.md for architecture details}"
+    : "${TPL_SPECS_AND_DOCS:=Check specs/ directory for specifications}"
+    : "${TPL_TEST_COMMANDS:=See AGENT.md for test commands}"
+    : "${TPL_PROJECT_OVERVIEW:=See CLAUDE.md and AGENT.md for project details}"
+    : "${TPL_VIGIL_CONTEXT:=(Injected at runtime by Skinner)}"
+    : "${TPL_PREREQUISITES:=See AGENT.md}"
+    : "${TPL_BUILD_COMMANDS:=See AGENT.md}"
+    : "${TPL_RUN_COMMANDS:=See AGENT.md}"
+    : "${TPL_PROJECT_STRUCTURE:=See AGENT.md}"
+    : "${TPL_NOTES:=}"
+    : "${TPL_SPEC_PATH:=specs/spec.md}"
+    : "${TPL_PLAN_PATH:=specs/plan.md}"
+    : "${TPL_STORY_1_NAME:=Core Feature}"
+}
+
+# Resolve all {{PLACEHOLDER}} values in a single file.
+# Usage: resolve_template_file <filepath>
+# Skips files that have no {{...}} placeholders.
+resolve_template_file() {
+    local filepath="$1"
+
+    [ -f "$filepath" ] || return 0
+
+    # Skip if no placeholders
+    grep -q '{{' "$filepath" || return 0
+
+    log "INFO" "Resolving template: $(basename "$filepath")"
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cp "$filepath" "$tmpfile"
+
+    # Simple single-line substitutions via sed
+    sed -i "s|{{PROJECT_NAME}}|${TPL_PROJECT_NAME}|g" "$tmpfile"
+    sed -i "s|{{PROJECT_TYPE}}|${TPL_PROJECT_TYPE}|g" "$tmpfile"
+    sed -i "s|{{PROJECT_ROOT}}|${TPL_PROJECT_ROOT}|g" "$tmpfile"
+    sed -i "s|{{BRANCH}}|${TPL_BRANCH}|g" "$tmpfile"
+    sed -i "s|{{SPEC_PATH}}|${TPL_SPEC_PATH}|g" "$tmpfile"
+    sed -i "s|{{PLAN_PATH}}|${TPL_PLAN_PATH}|g" "$tmpfile"
+    sed -i "s|{{STORY_1_NAME}}|${TPL_STORY_1_NAME}|g" "$tmpfile"
+
+    # Multi-line substitutions using awk (for placeholders that are alone on a line)
+    local multi_placeholders="PROJECT_OVERVIEW TECH_STACK ARCHITECTURE SPECS_AND_DOCS TEST_COMMANDS VIGIL_CONTEXT PREREQUISITES BUILD_COMMANDS RUN_COMMANDS PROJECT_STRUCTURE NOTES"
+
+    for placeholder in $multi_placeholders; do
+        # Skip if placeholder not present
+        grep -q "{{${placeholder}}}" "$tmpfile" || continue
+
+        local value=""
+        eval "value=\"\${TPL_${placeholder}}\""
+
+        local val_file
+        val_file=$(mktemp)
+        echo "$value" > "$val_file"
+
+        awk -v placeholder="{{${placeholder}}}" -v valfile="$val_file" '
+        {
+            if (index($0, placeholder)) {
+                while ((getline line < valfile) > 0) print line
+                close(valfile)
+            } else {
+                print
+            }
+        }' "$tmpfile" > "${tmpfile}.new"
+        mv "${tmpfile}.new" "$tmpfile"
+        rm -f "$val_file"
+    done
+
+    cp "$tmpfile" "$filepath"
+    rm -f "$tmpfile"
+}
+
+# Resolve all templates in the worktree's .ralph/ directory.
+# For files that already exist (project-specific), skip if no placeholders.
+# For PROMPT.md, copy from generic template if missing, then resolve.
+resolve_prompt_template() {
+    local wt_ralph="$WORKTREE_DIR/.ralph"
+
+    # Build the substitution variables once
+    build_template_vars
+
+    # PROMPT.md: copy from generic if missing
+    if [ ! -f "$wt_ralph/PROMPT.md" ] && [ -f "$MOTOR_ROOT/.ralph/PROMPT.md" ]; then
+        cp "$MOTOR_ROOT/.ralph/PROMPT.md" "$wt_ralph/PROMPT.md"
+        log "INFO" "Copied generic PROMPT.md to worktree"
+    fi
+
+    # Resolve all .md files in .ralph/ that contain {{placeholders}}
+    for md_file in "$wt_ralph"/*.md; do
+        [ -f "$md_file" ] || continue
+        resolve_template_file "$md_file"
+    done
+
+    log "INFO" "Template resolution complete"
+}
+
 # ─── Worktree Management ────────────────────────────────────────────────────
 # Worktrees are created in the PROJECT's git repo (not the motor)
 create_worktree() {
@@ -211,24 +408,20 @@ create_worktree() {
     mkdir -p "$(dirname "$WORKTREE_DIR")"
     git -C "$PROJECT_DIR" worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" HEAD
 
-    # Copy project's .ralph/ into worktree (or motor's templates as fallback)
-    if [ -d "$PROJECT_DIR/.ralph" ]; then
-        cp -r "$PROJECT_DIR/.ralph" "$WORKTREE_DIR/.ralph"
-        log "INFO" "Copied .ralph/ from project"
-    elif [ -d "$MOTOR_ROOT/.ralph" ]; then
-        cp -r "$MOTOR_ROOT/.ralph" "$WORKTREE_DIR/.ralph"
-        log "INFO" "Copied .ralph/ from motor (template)"
+    # Copy resolved config into worktree (from motor configs/ or project)
+    cp -r "$RALPH_DIR" "$WORKTREE_DIR/.ralph"
+    log "INFO" "Copied .ralph/ from: $RALPH_DIR"
+
+    cp "$RALPHRC" "$WORKTREE_DIR/.ralphrc"
+    log "INFO" "Copied .ralphrc from: $RALPHRC"
+
+    if [ -n "$PROJECT_CLAUDE_MD" ]; then
+        cp "$PROJECT_CLAUDE_MD" "$WORKTREE_DIR/CLAUDE.md"
+        log "INFO" "Copied CLAUDE.md from: $PROJECT_CLAUDE_MD"
     fi
 
-    # Copy project's .ralphrc
-    if [ -f "$PROJECT_DIR/.ralphrc" ]; then
-        cp "$PROJECT_DIR/.ralphrc" "$WORKTREE_DIR/.ralphrc"
-    fi
-
-    # Copy project's CLAUDE.md
-    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
-        cp "$PROJECT_DIR/CLAUDE.md" "$WORKTREE_DIR/CLAUDE.md"
-    fi
+    # Resolve PROMPT.md template if not present in project config
+    resolve_prompt_template
 
     log "INFO" "Worktree created successfully"
     LAST_GOOD_COMMIT=$(git -C "$WORKTREE_DIR" rev-parse HEAD)
@@ -429,8 +622,9 @@ run_ralph_loop() {
         cmd_args+=("--append-system-prompt" "$(cat .ralph/PROMPT.md)")
     fi
 
-    # Allowed tools from .ralphrc
+    # Allowed tools from .ralphrc (strip trailing comma if present)
     if [ -n "${ALLOWED_TOOLS:-}" ]; then
+        ALLOWED_TOOLS="${ALLOWED_TOOLS%,}"
         cmd_args+=("--allowedTools" "$ALLOWED_TOOLS")
     fi
 
