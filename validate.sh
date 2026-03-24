@@ -402,3 +402,68 @@ echo "════════════════════════�
 echo "Validation complete."
 echo "Report: $REPORT_PATH"
 echo "═══════════════════════════════════════════════════════"
+
+# ─── Update fix_plan.md with CRITICAL/HIGH findings ─────────────────────────
+# Resolve fix_plan path: motor configs/ first, then workspace
+FIXPLAN_PATH=""
+if [ -n "$RALPH_CONFIG_SRC" ] && [ -f "$RALPH_CONFIG_SRC/fix_plan.md" ]; then
+    FIXPLAN_PATH="$RALPH_CONFIG_SRC/fix_plan.md"
+elif [ -f "$WORKSPACE_DIR/.ralph/fix_plan.md" ]; then
+    FIXPLAN_PATH="$WORKSPACE_DIR/.ralph/fix_plan.md"
+fi
+
+if [ -f "$REPORT_PATH" ] && [ -n "$FIXPLAN_PATH" ]; then
+    echo ""
+    echo "Updating fix_plan.md with validation findings..."
+
+    FIXPLAN_PROMPT="You are a task planner for the AI-Brain Engine.
+
+Read the validation report and the current fix_plan.md. Then update fix_plan.md by:
+
+1. Adding a new section '## Pendente — Correcoes da Validacao' (or updating it if it already exists)
+2. Group findings by severity: CRITICAL first, then HIGH
+3. Each finding becomes a task with '- [ ]' checkbox
+4. Skip MEDIUM/LOW — only CRITICAL and HIGH go into fix_plan
+5. Skip findings that are already covered by existing tasks (check both Pendente and Concluido sections)
+6. Preserve ALL existing content (especially the Concluido section)
+7. Write the result back to: $FIXPLAN_PATH
+
+## Format example:
+\`\`\`
+### CRITICAL — <short title>
+
+<one line description>
+
+- [ ] <specific actionable task>
+- [ ] <test for the fix>
+
+### HIGH — <short title>
+
+<one line description>
+
+- [ ] <specific actionable task>
+\`\`\`
+
+## Files to read:
+- Validation report: $REPORT_PATH
+- Current fix_plan: $FIXPLAN_PATH
+
+IMPORTANT: Output in PT-BR. Only modify fix_plan.md, nothing else."
+
+    "$CLAUDE_CODE_CMD" --print -p "$FIXPLAN_PROMPT" 2>&1 | tee -a /dev/stderr
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════"
+    echo "fix_plan.md updated: $FIXPLAN_PATH"
+    echo "═══════════════════════════════════════════════════════"
+else
+    if [ ! -f "$REPORT_PATH" ]; then
+        echo ""
+        echo "WARN: Validation report not found at $REPORT_PATH — skipping fix_plan update"
+    fi
+    if [ -z "$FIXPLAN_PATH" ]; then
+        echo ""
+        echo "WARN: No fix_plan.md found — skipping fix_plan update"
+        echo "  Run /setup-workspace $WORKSPACE_NAME to create one"
+    fi
+fi
